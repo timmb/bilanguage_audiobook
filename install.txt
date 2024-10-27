@@ -1,0 +1,36 @@
+Installation
+============
+
+Top-level dependencies are listed in requirements.txt as is customary. In the unlikely circumstance that they are all provided by your OS'es package manager, you could install them that way.
+
+2nd option is to install globally with pip: 'sudo pip install -r requirements.txt'. The option '--break-system-packages' might also be needed.
+
+3rd option is to install 'locally' (ie. in somewhere like ~/.local/lib/python): 'pip install -r requirements.txt' (no sudo).
+
+4th option is to create a virtualenv in the bilanguage_audiobook directory:
+  python -m venv venv
+then
+  ./venv/bin/pip install -r requirements.txt
+then
+  run with './venv/bin/python bilanguage_audiobook'
+  or edit the shebang at the top of the bilanguage_audiobook script itself to point to the absolute location of ./venv/bin/python, and run 'bilanguage_audiobook' from anywhere
+
+
+Caveat for all of these
+=======================
+
+There is not currently a 'piper-tts' package on pypi that works with the current Python 3.12. Doing 'pip install piper-tts' from a 3.12 installation will fail:
+  https://github.com/rhasspy/piper/issues/509
+
+If you don't have a better way to get Python 3.11 or older to co-exist on your system, one can use Pyenv:
+  pyenv install 3.11.9      # download this Python version into Pyenv's internal directories
+  pyenv local 3.11.9        # create .python-version here in the project directory to say that Python files here should use this version
+  eval "$(pyenv init -)"    # mess with PATH to override Python commands in this shell
+
+Then go ahead with the virtualenv process above.
+
+
+Runtime data
+============
+Faster-Whisper and Piper ML models specified on the command line by name should automatically download into a location along the lines of:
+  (Linux) ~/.cache/huggingface/hub
