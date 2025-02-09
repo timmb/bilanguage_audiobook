@@ -288,6 +288,7 @@ Options:
             sys.exit(popen.returncode)
 
         # Change param to use the file in the temp dir instead
+        # TODO: This should be tempWavFilePath
         param_mediaLocation = "/tmp/whisper_audio.wav"
 
     """
@@ -479,44 +480,24 @@ Options:
 
     # + }}}
 
-    # + Initialize text-to-speech (Piper) {{{
+     # + Initialize text-to-speech (OpenAI) {{{
 
-    print("=== Initializing Piper TTS...")
+    print("=== Initializing OpenAI TTS...")
+    from openai import OpenAI
+    from pathlib import Path
+    import tempfile
+    import pydub
 
-    import piper
+    # beep = pydub.generators.Sawtooth(440, duty_cycle = 0.2).to_audio_segment(duration = 100) - 10.0  # quieten by 10 dB
+    gap = pydub.AudioSegment.silent(duration = 600 * 0)  # milliseconds
 
-    # Load and parse voices.json, a database of all available voices
-    import huggingface_hub
-    import json
-    with open(huggingface_hub.hf_hub_download(repo_id="rhasspy/piper-voices", filename="voices.json"), "r", encoding="utf-8") as f:
-        voiceIndex = json.load(f)
 
-    # Find the voice of the requested name and download its .onnx and .onnx.json files
-    onnxFilePath = None
-    onnxJsonFilePath = None
-    for filePath in voiceIndex[option_piperVoiceName]["files"]:
-        print("File: " + filePath)
-        if filePath.endswith(".onnx"):
-            onnxFilePath = huggingface_hub.hf_hub_download(repo_id="rhasspy/piper-voices", filename=filePath)
-        elif filePath.endswith(".onnx.json"):
-            onnxJsonFilePath = huggingface_hub.hf_hub_download(repo_id="rhasspy/piper-voices", filename=filePath)
-    #huggingface_hub.snapshot_download(repo_id="rhasspy/piper-voices", allow_patterns="*/en_GB-alba-medium.onnx*")
-
-    if onnxFilePath == None or onnxJsonFilePath == None:
-        print("ERROR: Failed to load Piper model: " + option_piperVoiceName)
-        sys.exit(-1)
-    piperVoice = piper.RestartablePiperVoice(onnxFilePath, onnxJsonFilePath, i_useCuda = False)
+    # Initialize OpenAI client
+    openai = OpenAI()
 
     # + }}}
 
     # + Synthesize audio {{{
-
-    # Initialize Pydub
-    import pydub
-    import pydub.generators
-    # Generate beep and between-group gap
-    beep = pydub.generators.Sawtooth(440, duty_cycle = 0.2).to_audio_segment(duration = 100) - 10.0  # quieten by 10 dB
-    gap = pydub.AudioSegment.silent(duration = 600)  # milliseconds
 
     print("=== Synthesizing audio...")
 
@@ -533,58 +514,54 @@ Options:
         else:
             endSourcePosInSeconds = group[-1].end
 
-        print("(" + "{:.2f}".format((groupNo) / len(groups) * 100) + "%) " + secondsToVttTimestamp(sourcePosInSeconds) + " .. " + secondsToVttTimestamp(endSourcePosInSeconds))
+        print(f"({(groupNo / len(groups) * 100):.2f}%) {secondsToVttTimestamp(sourcePosInSeconds)} .. {secondsToVttTimestamp(endSourcePosInSeconds)}")
 
         # Append source audio segment
         if option_subtitles:
             outStartPos = outPosInSeconds
-        audioSegment = source[sourcePosInSeconds * 1000 : endSourcePosInSeconds * 1000]
+        audioSegment = source[int(sourcePosInSeconds * 1000):int(endSourcePosInSeconds * 1000)]
         outAudioSegments.append(audioSegment)
         outPosInSeconds += audioSegment.duration_seconds
         if option_subtitles:
-            vttFile.write(secondsToVttTimestamp(outStartPos) + " --> " + secondsToVttTimestamp(outPosInSeconds) + "\n")
-            vttFile.write(" " + "".join([word.word  for word in group]) + "\n\n")
+            vttFile.write(f"{secondsToVttTimestamp(outStartPos)} --> {secondsToVttTimestamp(outPosInSeconds)}\n")
+            vttFile.write(" " + "".join(word.word for word in group) + "\n\n")
             vttFile.flush()
 
-        #
         outAudioSegments.append(gap)
         outPosInSeconds += gap.duration_seconds
 
         # Generate speech and append
         generatedLanguageText = translations[groupNo]
-        generatedLanguageSamples = piperVoice.synthesize_fromText(generatedLanguageText, option_piperVoiceSpeakerNo)
+        temp_audio_path = Path(tempfile.gettempdir()) / f"speech_{groupNo}.mp3"
+
+        with openai.audio.speech.with_streaming_response.create(
+            model="tts-1",
+            voice="onyx",
+            input=generatedLanguageText,
+        ) as response:
+            response.stream_to_file(temp_audio_path)
+
+        generated_audio = pydub.AudioSegment.from_file(temp_audio_path, format="mp3") - 5.0
+        outAudioSegments.append(generated_audio)
+        outPosInSeconds += generated_audio.duration_seconds
         if option_subtitles:
-            outStartPos = outPosInSeconds
-        audioSegment = pydub.AudioSegment(data = audio_float_to_int16(generatedLanguageSamples).tobytes(), sample_width = 2, frame_rate = 22050, channels = 1) - 5.0
-        outAudioSegments.append(audioSegment)
-        outPosInSeconds += audioSegment.duration_seconds
-        if option_subtitles:
-            vttFile.write(secondsToVttTimestamp(outStartPos) + " --> " + secondsToVttTimestamp(outPosInSeconds) + "\n")
-            vttFile.write(" " + generatedLanguageText + "\n\n")
+            vttFile.write(f"{secondsToVttTimestamp(outStartPos)} --> {secondsToVttTimestamp(outPosInSeconds)}\n")
+            vttFile.write(f" {generatedLanguageText}\n\n")
             vttFile.flush()
 
-        #
         outAudioSegments.append(gap)
         outPosInSeconds += gap.duration_seconds
 
-        # Append source audio segment
+        # Append source audio segment again
         if option_subtitles:
             outStartPos = outPosInSeconds
-        audioSegment = source[sourcePosInSeconds * 1000 : endSourcePosInSeconds * 1000]
+        audioSegment = source[int(sourcePosInSeconds * 1000):int(endSourcePosInSeconds * 1000)]
         outAudioSegments.append(audioSegment)
         outPosInSeconds += audioSegment.duration_seconds
         if option_subtitles:
-            vttFile.write(secondsToVttTimestamp(outStartPos) + " --> " + secondsToVttTimestamp(outPosInSeconds) + "\n")
-            vttFile.write(" " + "".join([word.word  for word in group]) + "\n\n")
+            vttFile.write(f"{secondsToVttTimestamp(outStartPos)} --> {secondsToVttTimestamp(outPosInSeconds)}\n")
+            vttFile.write(" " + "".join(word.word for word in group) + "\n\n")
             vttFile.flush()
-
-        ## Append beep
-        #outAudioSegments.append(gap)
-        #outPosInSeconds += gap.duration_seconds
-        #outAudioSegments.append(beep)
-        #outPosInSeconds += beep.duration_seconds
-        #outAudioSegments.append(gap)
-        #outPosInSeconds += gap.duration_seconds
 
         sourcePosInSeconds = endSourcePosInSeconds
 
